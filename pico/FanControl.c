@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "hardware/pwm.h"
+#include "hardware/gpio.h"
 
 //[ADDED CODE]//
 #define pwmPin 15               // GPIO 15 or pico 20
@@ -18,7 +19,11 @@ int pwmDC = 0;                  // the current duty cycle
 uint rpmSlice;                  // pwm slice that counts fan rotations
 #define ROT_CNT_PERIOD  500     // how often to check the blade rotation count [ms]
 int rotCnt = 0;                 //used to measure fan speed
+int rot_enc_table[]= {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0}; // this table is used to reliably debounce the encoder
 int oldrotCnt = 0;
+
+#define chApin 16               // GPIO 16, pin 21
+#define chBpin 17               // GPIO 17 pin 22
 
 ////////////////
 
@@ -26,7 +31,7 @@ void RegisterCMD(char* cmd, void *function);
 void HandleCmd(void);
 
 // CharsReadyCallback is called when there are characters waiting in the serial buffer
-// we just set a flag, then handle the characters in the main loop
+// we just set a flag, then handle the characters in the main loopg, uin
 void CharsReadyCallback(void *flag){
     *(bool *)flag = true;
 }
@@ -52,6 +57,22 @@ bool repeating_timer_callback(__unused struct repeating_timer *t) {
         rotations += 0x1000;
     rpmRead = (rotations / 2.0) / (ROT_CNT_PERIOD / 1000.0) * 60;    // 2 ticks per rev, convert ms to s, convert s to min
     return true;
+}
+
+// encoder_callback gets called when a rising edge on encoder CH A is detected
+void gpio_callback(uint gpio, uint32_t events){
+
+    static int steps = 0;
+
+    if(gpio_get(chApin)){
+        pwmDC--;
+    }
+    else{
+        pwmDC++;
+    }
+    steps++;
+
+    printf("%d\t%d\n", steps, pwmDC);
 }
 
 
@@ -106,6 +127,14 @@ int main() {
     pwm_config_set_clkdiv_mode(&c, PWM_DIV_B_RISING); // instead of using a clock we want to count up on the rising edge of ch B
     pwm_init(rpmSlice, &c, true);                   // start the rpm slice running
     
+//----- setup the pins for the rotary encoder
+    gpio_init   (chApin); 
+    gpio_set_dir(chApin, GPIO_IN);
+    gpio_init   (chBpin); 
+    gpio_set_dir(chBpin, GPIO_IN);
+    gpio_set_irq_enabled_with_callback(chBpin, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
+
+
     // request a periodic timer to check fan blade rotations
     struct repeating_timer timer;
     add_repeating_timer_ms(ROT_CNT_PERIOD, repeating_timer_callback, NULL, &timer);
@@ -113,7 +142,7 @@ int main() {
     // register callback to collect characters in the serial buffer
     stdio_set_chars_available_callback(CharsReadyCallback, (void *)&CharsReadyFlag);
 
-//----[SERIAL MONITOR COMMANDS]-----//
+ //----[SERIAL MONITOR COMMANDS]-----//
     RegisterCMD("speed", CmdSpeed); // "speed"
     RegisterCMD("cycle", CmdCycle); // "cycle"
     RegisterCMD("rpm",CmdTACHread); //  "rpm"
